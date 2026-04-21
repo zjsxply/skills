@@ -254,14 +254,19 @@ Use this matrix to decide whether the target market should be handled by wrapped
 ### mdskills.ai
 
 - Mode: `manual-web`
-- Submission path: `https://www.mdskills.ai/submit`
-- Auth: login required
-- Compatible unit: GitHub-backed skill submission
+- Submission paths:
+  - `https://www.mdskills.ai/submit`
+  - authenticated `POST https://www.mdskills.ai/api/submit`
+  - authenticated `PATCH https://www.mdskills.ai/api/submissions/<id>` with `{"action":"submit_for_review"}`
+- Auth: login required; the JSON submit flow depends on a normal site session
+- Compatible unit: GitHub-backed single-skill submit using the site's `skill_pack` artifact type
 - Verification:
-  - site search and public listing pages on `https://www.mdskills.ai/skills`
+  - queue admission from `{success:true,id,slug}` plus a successful `submit_for_review`
+  - later site search and public listing pages on `https://www.mdskills.ai/skills`
 - Notes:
   - Public docs treat `SKILL.md` as a first-class ecosystem format.
   - Current submit path redirects to login before the real form appears.
+  - Queue admission is strong submit evidence, but public visibility still depends on review.
 
 ### Skillery
 
@@ -286,23 +291,30 @@ Use this matrix to decide whether the target market should be handled by wrapped
   - profile-side `My Submissions` for review state
 - Notes:
   - Public form fields are visible, but the submit API is not documented as a stable integration surface.
+  - A valid logged-in session alone does not prove the JSON endpoint is usable. Keep this market manual until the current backend `500` behavior on `POST /api/users/submissions` is resolved or replaced by a stable supported path.
 
 ### SkillHub
 
 - Mode: `manual-web`
 - Submission paths:
   - app workspace `https://www.skillhub.club/app/skills`
+  - authenticated `POST https://www.skillhub.club/api/user/skills/push`
+  - authenticated `PATCH https://www.skillhub.club/api/user/skills/<id>` for visibility
+  - authenticated `POST https://www.skillhub.club/api/user/skills/<id>/publish`
   - official CLI docs `https://www.skillhub.club/docs/cli`
 - Auth: login required for management and publish
 - Compatible unit:
-  - local `SKILL.md`
+  - uploaded file set containing `SKILL.md`
   - zip upload
   - current-directory CLI publish
 - Verification:
+  - authenticated `GET https://www.skillhub.club/api/user/skills`
   - public directory `https://www.skillhub.club/skills`
-  - public detail page `https://www.skillhub.club/skills/<slug>`
+  - public detail page `https://www.skillhub.club/skills/<owner>-<skill-name>`
 - Notes:
   - Official CLI documents `login`, `push`, and `publish`.
+  - The current web app creates a draft/private skill first. Public listing requires an explicit visibility change plus a publish call.
+  - The current web upload flow enforces a hard total text payload limit of about `100 KiB` for one pushed version, so trim nonessential bundled files before using the app path.
   - The market also advertises GitHub-based auto-indexing, so do not mix hosted publish and crawler discovery into one assumption.
 
 ### SkillHQ
