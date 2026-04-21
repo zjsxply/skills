@@ -157,6 +157,7 @@ Interpret submit responses before deciding what to verify next:
   - publish response with `public_url`: strongest immediate signal
   - public detail page: listed
   - CLI success but no public page yet: likely pending propagation or publish not completed
+  - the public URL handle can be platform-side account metadata rather than the submitted GitHub owner handle; treat it as market-controlled until the site exposes a verified profile rename path
 
 ### mdskills.ai
 

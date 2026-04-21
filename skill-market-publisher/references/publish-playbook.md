@@ -58,6 +58,7 @@ Use these rules:
 Do not guess market-only fields.
 
 - Versioned CLI markets: set an explicit semantic version.
+- Username-like author or submitter fields: prefer the GitHub owner handle derived from the submitted repo URL unless the market explicitly needs a different public identity.
 - Review queues: provide author email only if the official form asks for it.
 - Seller markets: provide price, payout, wallet, or payment product fields only when required.
 - GitHub URL markets: use a stable repo or folder URL and a stable branch.

@@ -646,6 +646,21 @@ def github_owner_url(repo_url: str | None) -> str | None:
     return f"https://github.com/{owner}"
 
 
+def github_owner_handle(repo_url: str | None) -> str | None:
+    parts = github_repo_parts(repo_url)
+    if not parts:
+        return None
+    owner, _repo = parts
+    return owner
+
+
+def preferred_author_name(author_name: str | None, repo_url: str | None) -> str | None:
+    explicit = author_name.strip() if author_name else ""
+    if explicit:
+        return explicit
+    return github_owner_handle(repo_url)
+
+
 def github_skill_urls(repo_url: str | None, git_ref: str | None, relative_skill_dir: str) -> dict[str, str | None]:
     if not repo_url or not git_ref:
         return {"skill_url": None, "raw_skill_url": None}
@@ -725,6 +740,7 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
     repo_url = clean_repo_url(getattr(args, "repo_url", None))
     tags = unique_tags(getattr(args, "tags", []) or [])
     summary_source = getattr(args, "summary", None) or skill.overview or skill.description
+    author_name = preferred_author_name(getattr(args, "author_name", None), repo_url)
     urls = github_skill_urls(repo_url, getattr(args, "git_ref", None), skill.relative_skill_dir)
     skill_dir_url = github_tree_url(repo_url, getattr(args, "git_ref", None), skill.relative_skill_dir) or repo_url
     return {
@@ -743,7 +759,7 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
             "overview": skill.overview,
             "tags": tags,
             "version": getattr(args, "version", None),
-            "author_name": getattr(args, "author_name", None),
+            "author_name": author_name,
             "author_email": getattr(args, "author_email", None),
             "image_url": getattr(args, "image_url", None),
             "skillz_category": getattr(args, "skillz_category", None),
@@ -816,6 +832,7 @@ def print_inspect(context: dict[str, Any], json_mode: bool) -> None:
     print(f"Relative skill dir: {skill['relative_skill_dir']}")
     print(f"Repo URL: {repo['repo_url'] or '(none)'}")
     print(f"Skill URL: {repo['skill_url'] or '(none)'}")
+    print(f"Author / submitter: {submission['author_name'] or '(none)'}")
     print(f"Summary: {submission['summary']}")
 
 
@@ -971,7 +988,7 @@ def build_skillsrep_payload(context: dict[str, Any]) -> dict[str, str]:
         ]
     )
     tags = submission["tags"] or [context["skill"]["name"]]
-    creator_name = submission["author_name"] or (github_repo_parts(repo_url)[0] if github_repo_parts(repo_url) else "")
+    creator_name = submission["author_name"] or github_owner_handle(repo_url) or ""
     creator_url = github_owner_url(repo_url) or repo_url
     return {
         "name": context["skill"]["name"],
@@ -1024,6 +1041,7 @@ def manual_notes(context: dict[str, Any], plan: list[dict[str, Any]]) -> str:
     skill_dir_url = context["repo"].get("skill_dir_url") or repo_url
     skill_url = context["repo"]["skill_url"] or "(set --repo-url and --git-ref first)"
     raw_skill_url = context["repo"]["raw_skill_url"] or "(set --repo-url and --git-ref first)"
+    author_name = context["submission"]["author_name"] or "(set --author-name or use a GitHub --repo-url)"
     lines = [
         "# Manual Submission Notes",
         "",
@@ -1031,6 +1049,7 @@ def manual_notes(context: dict[str, Any], plan: list[dict[str, Any]]) -> str:
         f"- Skill Folder URL: {skill_dir_url}",
         f"- SKILL.md URL: {skill_url}",
         f"- Raw SKILL.md URL: {raw_skill_url}",
+        f"- Preferred author / submitter: {author_name}",
         f"- Repo layout: {context['skill']['repo_layout']}",
         "",
     ]
@@ -1396,7 +1415,10 @@ def add_shared_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tag", dest="tags", action="append", default=[], help="Tag to include in the bundle")
     parser.add_argument("--summary", help="Override the generated short summary")
     parser.add_argument("--version", help="Version for versioned markets such as ClawHub")
-    parser.add_argument("--author-name", help="Author or submitter name for markets that require it")
+    parser.add_argument(
+        "--author-name",
+        help="Author or submitter name for markets that require it; defaults to the GitHub owner handle from --repo-url",
+    )
     parser.add_argument("--author-email", help="Contact email for markets that require it")
     parser.add_argument("--image-url", help="Optional image URL for directory submissions")
     parser.add_argument(
@@ -1489,7 +1511,7 @@ def build_parser() -> argparse.ArgumentParser:
             """\
             Examples:
               python3 scripts/skill_market_publish.py plan ./my-skill --repo-url https://github.com/owner/repo
-              python3 scripts/skill_market_publish.py bundle ./my-skill --repo-url https://github.com/owner/repo --git-ref main --author-name "Your Name" --author-email you@example.com --skillz-category automation --bogen-category development --a2a-price 5 --a2a-category development --a2a-seller 0xabc --out-dir /tmp/skill-market-bundle
+              python3 scripts/skill_market_publish.py bundle ./my-skill --repo-url https://github.com/owner/repo --git-ref main --author-email you@example.com --skillz-category automation --bogen-category development --a2a-price 5 --a2a-category development --a2a-seller 0xabc --out-dir /tmp/skill-market-bundle
               python3 scripts/skill_market_publish.py publish agentskill-sh ./my-skill --repo-url https://github.com/owner/repo --execute
             """
         ),

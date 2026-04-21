@@ -33,7 +33,6 @@ python3 scripts/skill_market_publish.py plan /abs/path/to/skill \
 python3 scripts/skill_market_publish.py bundle /abs/path/to/skill \
   --repo-url https://github.com/owner/repo \
   --git-ref main \
-  --author-name "Your Name" \
   --author-email you@example.com \
   --version 0.1.0 \
   --skillz-category automation \
@@ -110,6 +109,7 @@ Some markets also expose official CLI or seller dashboards that this skill recor
 Provide explicit values for market-only fields instead of guessing.
 
 - Use `--version` for ClawHub publishing.
+- When a market asks for a username-like author or submitter field, prefer the GitHub owner handle from `--repo-url`. Override `--author-name` only when you need a different public identity.
 - Use `--author-email` and `--skillz-category` for Skillz Directory.
 - Map domain-specific categories onto the market's real enum. If the market does not expose `research`, `browser`, or another domain label you want, choose the closest supported value or `other` instead of inventing one.
 - Use `--a2a-price`, `--a2a-category`, and `--a2a-seller` for A2A Market.
