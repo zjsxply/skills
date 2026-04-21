@@ -36,15 +36,4 @@ Notes:
 | Skill | What it does | Typical use cases |
 | --- | --- | --- |
 | `semantic-scholar-library-feed` | Work with a user's Semantic Scholar account to read Research Feeds, inspect private Library folders, add papers to folders, and resolve paper records from identifiers such as arXiv IDs. | Browse or export feed results, review saved papers, compare folder contents, update a library folder, and map stable identifiers to Semantic Scholar paper records. |
-
-## Repository Layout
-
-```text
-semantic-scholar-library-feed/
-  SKILL.md
-  scripts/
-  references/
-  agents/
-```
-
-Each skill lives in its own directory and is centered around a `SKILL.md` file.
+| `url-citation-search` | Find papers and preprints that cite a given URL by reverse-searching URL variants, titles, slugs, and mirror pages, then verifying the reference in PDF or HTML. | Check which papers cite a blog post, documentation page, project page, demo page, or other web content that standard citation indexes often miss. |

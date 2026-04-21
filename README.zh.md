@@ -36,15 +36,4 @@ npx skills add zjsxply/skills --skill semantic-scholar-library-feed -g -y
 | Skill | 功能 | 适用场景 |
 | --- | --- | --- |
 | `semantic-scholar-library-feed` | 面向用户的 Semantic Scholar 账号读取 Research Feed、查看私有 Library 文件夹、向文件夹添加论文，并根据 arXiv ID 等标识解析论文记录。 | 浏览或导出 feed 结果、查看已保存论文、比较文件夹内容、更新某个 library folder，以及把稳定标识映射到 Semantic Scholar 论文记录。 |
-
-## 仓库结构
-
-```text
-semantic-scholar-library-feed/
-  SKILL.md
-  scripts/
-  references/
-  agents/
-```
-
-每个 skill 都位于独立目录中，核心入口文件是 `SKILL.md`。
+| `url-citation-search` | 通过反向搜索 URL 变体、标题、slug 与镜像页面，并在 PDF 或 HTML 中核实参考文献，查找引用某个给定网址的正式论文和预印本。 | 查询哪些论文引用了一篇博客、文档页、项目页、演示页，或其他常规引文数据库不易覆盖的网页内容。 |
