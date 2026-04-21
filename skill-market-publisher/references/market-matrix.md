@@ -7,14 +7,16 @@ Use this matrix to decide whether the target market should be handled by wrapped
 ### ClawHub
 
 - Mode: `auto-cli`
-- Submission path: `clawhub skill publish <path> --version <semver>`
+- Submission path:
+  - current installed CLI may expose `clawhub publish <path> --version <semver>`
+  - some public docs still show `clawhub skill publish <path> --version <semver>`
 - Bulk path: `clawhub sync`
 - Auth: CLI login
 - Compatible unit: local skill directory
 - Verification:
   - use CLI output and the authenticated destination workspace
 - Notes:
-  - Official CLI docs expose `skill publish <path>` and keep `publish <path>` as a legacy alias.
+  - Prefer probing the installed CLI help and using the command shape it actually supports.
   - Good fit for direct skill-folder publishing from the workstation when the authenticated CLI is available.
 
 ### AgentSkill.sh
@@ -114,6 +116,29 @@ Use this matrix to decide whether the target market should be handled by wrapped
   - The live API returns `201` plus a submission ID when the item enters the review queue.
   - Fresh submissions can remain absent from public search until the review step completes.
 
+### skills.re
+
+- Mode: `auto-http`
+- Submission path:
+  - preview `POST https://skills.re/api/rpc/github/fetchRepo`
+  - submit `POST https://skills.re/api/rpc/skills/submitGithubRepoPublic`
+- Required fields:
+  - GitHub repository URL for preview
+  - `owner`
+  - `repo`
+  - `skillRootPaths`
+- Auth: none
+- Compatible unit:
+  - public GitHub repository URL plus one or more resolved skill root paths
+- Verification:
+  - public author and skill pages after submit
+  - public read APIs under `https://skills.re/api/rpc/`
+- Notes:
+  - Use `fetchRepo` first and only submit the exact `skillRootPath` values returned by the live backend.
+  - Review a submit template before execution, then replace it only with the exact paths returned by `fetchRepo`.
+  - This is safer than trusting submit-page copy about repo layout.
+  - If the public submit page still implies a repo-root `skills/` directory, treat root-pack acceptance as best-effort until preview and public verification both succeed.
+
 ### Bogen.ai
 
 - Mode: `auto-http`
@@ -209,21 +234,6 @@ Use this matrix to decide whether the target market should be handled by wrapped
   - public detail page after review
 - Notes:
   - Official copy says all listed skills use the open `SKILL.md` ecosystem.
-
-### skills.re
-
-- Mode: `manual-web`
-- Submission path: `https://skills.re/submit`
-- Auth: public submit surface visible
-- Compatible unit: repository URL
-- Verification:
-  - public author and skill pages after submit
-  - public read APIs under `https://skills.re/api/rpc/`
-- Current page behavior:
-  - The page asks for a repository URL.
-- Notes:
-  - The page copy mentions a repository-root `skills/` folder.
-  - Live preview and public read APIs can still accept some `root-pack` repositories, so verify the backend behavior before forcing a publish mirror.
 
 ## Auth-Gated Or Seller-Gated Targets
 

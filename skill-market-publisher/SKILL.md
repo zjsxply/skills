@@ -54,6 +54,16 @@ python3 scripts/skill_market_publish.py publish agentskill-sh /abs/path/to/skill
 
 5. Verify the result using the market-specific checks in [references/verification-playbook.md](references/verification-playbook.md).
 
+6. When a market still needs browser-side login or form interaction, open the tracked submit pages and use the printed checklist:
+
+```bash
+python3 scripts/open_manual_submit_pages.py \
+  --repo-url https://github.com/owner/repo \
+  --git-ref main \
+  --skill-path /abs/path/to/skill-a \
+  --skill-path /abs/path/to/skill-b
+```
+
 ## Workflow
 
 ### 1. Normalize the Release Unit
@@ -187,6 +197,7 @@ Wrapped live targets:
 - `agentskill-sh`
 - `skillz-directory`
 - `skillstore-io`
+- `skills-re`
 - `skillsmd-dev`
 - `bogen-ai`
 - `skillsrep`
@@ -195,6 +206,10 @@ Wrapped live targets:
 ### `recon`
 
 Fetch known market pages and check expected markers. Run this when a marketplace may have changed since the last verification pass.
+
+### `open_manual_submit_pages.py`
+
+Open the current manual-web submit pages in the default browser, print a short per-site checklist, and optionally print exact folder and `SKILL.md` URLs for the skills being submitted.
 
 ## Operating Rules
 

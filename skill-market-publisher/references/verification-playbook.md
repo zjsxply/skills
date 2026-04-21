@@ -127,8 +127,9 @@ Interpret submit responses before deciding what to verify next:
   - `https://skills.re/author/<handle>`
   - `https://skills.re/skill/<handle>/<repo>/<skill-slug>`
 - Interpretation:
+  - submit response with `skillsCount` equal to the requested `skillRootPaths` count means the backend accepted the scoped submit
   - author API hit plus skill API hit: public
-  - root-pack repo accepted by preview or submit APIs can still be valid even if submit-page copy mentions a repo-root `skills/` directory
+  - root-pack repo accepted by preview or submit APIs can still be valid even if submit-page copy mentions a repo-root `skills/` directory, but only treat it as confirmed after public author or skill reads succeed
   - no public record after submit: pending review, blocked, or surface changed
 
 ### AgentSkillsRepo

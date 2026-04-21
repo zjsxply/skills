@@ -112,7 +112,13 @@ Before or during submit, prepare a compact listing brief that contains:
 
 This mirrors the most useful public directory pages and makes both manual review and post-submit verification faster.
 
-## 9. Separate Reusable Guidance From Run Logs
+## 9. Open Manual Flows Safely
+
+- If a market is still `manual-web`, prefer opening the official submit page and guiding the user through it over replaying private browser requests.
+- Use `python3 scripts/open_manual_submit_pages.py --repo-url <repo> --git-ref <ref> --skill-path <skill-dir>` to open the tracked pages and print the short operator checklist plus exact URLs to paste.
+- Capture the resulting listing URL, queue URL, or submission page URL before closing the tab.
+
+## 10. Separate Reusable Guidance From Run Logs
 
 Keep this skill reusable.
 
