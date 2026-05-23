@@ -78,13 +78,17 @@ Interpret submit responses before deciding what to verify next:
 
 ### skills.sh
 
-- Best signal: public search API or official install/search tooling.
+- Best signal: official CLI search or public skills.sh repo/skill page.
+- Trigger:
+  - run `npx -y skills add <owner/repo> --skill <skill-name> --agent '*' -y` from a temporary project directory
+  - delete the temporary project directory after the command exits
 - Check:
-  - `https://skills.sh/api/search?q=<query>&limit=10`
   - `npx -y skills find <query>`
+  - the skills.sh repository page or exact skill page after cache refresh
 - Interpretation:
   - hit returned: indexed
-  - no hit: not indexed or not installable through this ecosystem
+  - successful temporary install but no hit yet: telemetry may not have propagated or the listing cache may not have refreshed
+  - no hit and install failed: not indexed because the repo is not currently installable through this ecosystem
 
 ### Skills Directory (`skillsdirectory.com`)
 
@@ -122,12 +126,12 @@ Interpret submit responses before deciding what to verify next:
 
 - Best signal: public author and skill APIs plus SSR detail pages.
 - Check:
-  - `POST https://skills.re/api/rpc/skills/getAuthorByHandle`
-  - `POST https://skills.re/api/rpc/skills/getByPath`
+  - `POST https://api.skills.re/rpc/skills/getAuthorByHandle`
+  - `POST https://api.skills.re/rpc/skills/getByPath`
   - `https://skills.re/author/<handle>`
   - `https://skills.re/skill/<handle>/<repo>/<skill-slug>`
 - Interpretation:
-  - submit response with `skillsCount` equal to the requested `skillRootPaths` count means the backend accepted the scoped submit
+  - submit response with `skillsCount` equal to the requested prepared-skill count means the backend accepted the scoped submit
   - author API hit plus skill API hit: public
   - root-pack repo accepted by preview or submit APIs can still be valid even if submit-page copy mentions a repo-root `skills/` directory, but only treat it as confirmed after public author or skill reads succeed
   - no public record after submit: pending review, blocked, or surface changed

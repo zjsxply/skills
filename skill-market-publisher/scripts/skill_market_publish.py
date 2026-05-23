@@ -4,12 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.cookiejar
 import json
+import os
 import re
+import shlex
 import subprocess
 import sys
+import tempfile
 import textwrap
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +28,8 @@ except ImportError:  # pragma: no cover - optional dependency
 
 
 USER_AGENT = "skill-market-publisher/1.0"
+SKILLS_RE_RPC_BASE = "https://api.skills.re/rpc"
+SKILLS_RE_BATCH_SIZE = 25
 
 SKILLZ_CATEGORIES = [
     "automation",
@@ -61,7 +68,7 @@ MARKETS: dict[str, dict[str, Any]] = {
         "recon": [
             {
                 "url": "https://raw.githubusercontent.com/openclaw/clawhub/main/docs/cli.md",
-                "markers": ["### `publish <path>`", "### `sync`"],
+                "markers": ["### `skill publish <path>`", "### `sync`"],
             }
         ],
     },
@@ -228,13 +235,13 @@ MARKETS: dict[str, dict[str, Any]] = {
         "auth": "None",
         "requires": ["repo_url"],
         "source_url": "https://skills.re/submit",
-        "submit_url": "https://skills.re/api/rpc/skills/submitGithubRepoPublic",
-        "verify": "Use the public author and skill pages or the public read APIs under https://skills.re/api/rpc/.",
-        "notes": "Public ORPC endpoints support repo preview and anonymous submit. Review both the preview request and the derived submit template first, then execute only when fetchRepo returns the exact target skillRootPath.",
+        "submit_url": f"{SKILLS_RE_RPC_BASE}/skills/submitGithubPreparedPublic",
+        "verify": "Use the public author and skill pages or the public read APIs under https://api.skills.re/rpc/.",
+        "notes": "Public oRPC endpoints now live on api.skills.re. The submit flow previews the repo, converts selected skill roots into prepared batches, and submits those batches to submitGithubPreparedPublic.",
         "recon": [
             {
                 "url": "https://skills.re/submit",
-                "markers": ["Repository URL", "FETCH", "SUBMIT"],
+                "markers": ["Repository URL", "submitGithubPreparedPublic", "VITE_SERVER_URL"],
             }
         ],
     },
@@ -278,18 +285,26 @@ MARKETS: dict[str, dict[str, Any]] = {
     },
     "skills-sh": {
         "title": "skills.sh",
-        "mode": "index-only",
+        "mode": "auto-cli",
         "status": "verified",
-        "auth": "None",
-        "requires": [],
-        "source_url": "https://skills.sh/",
-        "submit_url": None,
-        "verify": "Use https://skills.sh/api/search?q=<query>&limit=10 or npx -y skills find <query>.",
-        "notes": "Treat this as a discovery surface rather than a direct publish API.",
+        "auth": "None, but anonymous CLI telemetry must be enabled",
+        "requires": ["repo_url"],
+        "source_url": "https://www.skills.sh/docs/faq",
+        "submit_url": "npx skills add <owner/repo>",
+        "verify": "Use npx -y skills find <query>, then check the skills.sh repo or skill page after cache refresh.",
+        "notes": "skills.sh has no direct submit API. The verified intake path is to run skills add for a public repo from a temporary project directory, which sends anonymous install telemetry, then delete that temporary directory.",
         "recon": [
             {
-                "url": "https://skills.sh/",
-                "markers": ["skills.sh", "Discover", "skill"],
+                "url": "https://www.skills.sh/docs/faq",
+                "markers": [
+                    "How do I get my skill listed on the leaderboard?",
+                    "Once your skill is installed by users",
+                    "anonymous telemetry",
+                ],
+            },
+            {
+                "url": "https://www.skills.sh/docs/cli",
+                "markers": ["Telemetry", "DISABLE_TELEMETRY=1", "leaderboard"],
             }
         ],
     },
@@ -689,6 +704,298 @@ def github_tree_url(repo_url: str | None, git_ref: str | None, relative_skill_di
     return f"https://github.com/{owner}/{repo}/tree/{git_ref}/{relative_skill_dir}"
 
 
+def normalize_repo_path(path: str | None) -> str:
+    if not path or path == ".":
+        return ""
+    parts: list[str] = []
+    for raw_part in str(path).split("/"):
+        part = raw_part.strip()
+        if not part or part == ".":
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(part)
+    return "/".join(parts)
+
+
+def stable_json_dumps(data: Any) -> str:
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def sha256_hex(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def now_epoch_ms() -> int:
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
+def parse_epoch_ms(value: Any, fallback: int | None = None) -> int:
+    if fallback is None:
+        fallback = now_epoch_ms()
+    if not isinstance(value, str) or not value.strip():
+        return fallback
+    normalized = value.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return fallback
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
+
+
+def omit_none(data: Any) -> Any:
+    if isinstance(data, dict):
+        return {key: omit_none(value) for key, value in data.items() if value is not None}
+    if isinstance(data, list):
+        return [omit_none(value) for value in data]
+    return data
+
+
+def first_nonempty_string(values: list[Any]) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def skills_re_relative_tree(tree: Any, skill_root_path: str | None) -> list[dict[str, Any]]:
+    if not isinstance(tree, list):
+        return []
+    normalized_root = normalize_repo_path(skill_root_path)
+    prefix = f"{normalized_root}/" if normalized_root else ""
+    scoped_tree: list[dict[str, Any]] = []
+    for item in tree:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "")
+        if prefix and not path.startswith(prefix):
+            continue
+        relative_path = path[len(prefix) :] if prefix else path
+        if not relative_path:
+            continue
+        scoped_item = dict(item)
+        scoped_item["path"] = relative_path
+        scoped_tree.append(scoped_item)
+    return scoped_tree
+
+
+def skills_re_preferred_version(frontmatter: dict[str, Any]) -> str | None:
+    metadata = frontmatter.get("metadata")
+    if isinstance(metadata, dict):
+        version = metadata.get("version")
+        if isinstance(version, str) and version.strip():
+            return version.strip()
+    return None
+
+
+def skills_re_tags(frontmatter: dict[str, Any]) -> list[str] | None:
+    tags = frontmatter.get("tags")
+    if not isinstance(tags, list):
+        return None
+    normalized = [tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()]
+    return normalized or None
+
+
+def skills_re_license(frontmatter: dict[str, Any], repo_preview: dict[str, Any]) -> str | None:
+    top_level = frontmatter.get("license")
+    if isinstance(top_level, str) and top_level.strip():
+        return top_level.strip()
+    metadata = frontmatter.get("metadata")
+    if isinstance(metadata, dict):
+        nested = metadata.get("license")
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip()
+    license_info = repo_preview.get("licenseInfo")
+    if isinstance(license_info, dict):
+        name = license_info.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    return None
+
+
+def skills_re_commit_snapshot(repo_preview: dict[str, Any]) -> tuple[int, str | None, str | None]:
+    recent_commits = repo_preview.get("recentCommits")
+    first_commit = recent_commits[0] if isinstance(recent_commits, list) and recent_commits else {}
+    commit_date = parse_epoch_ms(repo_preview.get("commitDate") or first_commit.get("committedDate"))
+    commit_message = first_nonempty_string([repo_preview.get("commitMessage"), first_commit.get("message")])
+    commit_url = first_nonempty_string([first_commit.get("url")])
+    return commit_date, commit_message, commit_url
+
+
+def chunk_list(values: list[Any], size: int) -> list[list[Any]]:
+    if size <= 0:
+        raise ValueError("chunk size must be positive")
+    return [values[index : index + size] for index in range(0, len(values), size)]
+
+
+def build_skills_re_prepared_skill(repo_preview: dict[str, Any], repo_skill: dict[str, Any]) -> dict[str, Any]:
+    frontmatter = repo_skill.get("frontmatter") if isinstance(repo_skill.get("frontmatter"), dict) else {}
+    skill_root_path = normalize_repo_path(repo_skill.get("skillRootPath"))
+    skill_md_path = str(repo_skill.get("skillMdPath") or "SKILL.md")
+    skill_content = repo_skill.get("skillMdContent")
+    if not isinstance(skill_content, str):
+        raise ValueError(f"skills.re preview is missing skillMdContent for {skill_md_path}")
+
+    owner = first_nonempty_string([repo_preview.get("owner")])
+    repo = first_nonempty_string([repo_preview.get("repo")])
+    if not owner or not repo:
+        raise ValueError("skills.re preview is missing owner/repo metadata.")
+
+    source_commit_date, source_commit_message, source_commit_url = skills_re_commit_snapshot(repo_preview)
+    prepared = {
+        "description": first_nonempty_string([repo_skill.get("skillDescription"), frontmatter.get("description")]) or "",
+        "directoryPath": f"{skill_root_path}/" if skill_root_path else "",
+        "entryPath": skill_md_path,
+        "frontmatterHash": sha256_hex(stable_json_dumps(frontmatter)),
+        "initialSnapshot": {
+            "files": repo_skill.get("files") if isinstance(repo_skill.get("files"), list) else [],
+            "sourceCommitDate": source_commit_date,
+            "sourceCommitMessage": source_commit_message,
+            "sourceCommitSha": first_nonempty_string([repo_preview.get("commitSha")]),
+            "sourceCommitUrl": source_commit_url,
+            "sourceRef": first_nonempty_string([repo_preview.get("branch")]),
+            "tree": skills_re_relative_tree(repo_preview.get("tree"), repo_skill.get("skillRootPath")),
+        },
+        "license": skills_re_license(frontmatter, repo_preview),
+        "preferredVersion": skills_re_preferred_version(frontmatter),
+        "slug": first_nonempty_string([repo_skill.get("skillTitle"), frontmatter.get("name")]) or "",
+        "sourceLocator": f"github:{owner}/{repo}/{skill_md_path}",
+        "sourceType": "github",
+        "skillContentHash": sha256_hex(skill_content),
+        "tags": skills_re_tags(frontmatter),
+        "title": first_nonempty_string([repo_skill.get("skillTitle"), frontmatter.get("name")]) or "",
+    }
+    return omit_none(prepared)
+
+
+def build_skills_re_repo_metadata(repo_preview: dict[str, Any], prepared_skills: list[dict[str, Any]]) -> dict[str, Any]:
+    license_info = repo_preview.get("licenseInfo")
+    license_name = license_info.get("name") if isinstance(license_info, dict) else None
+    repo_parts = [repo_preview.get("nameWithOwner")]
+    if not first_nonempty_string(repo_parts):
+        owner = first_nonempty_string([repo_preview.get("owner")]) or ""
+        repo = first_nonempty_string([repo_preview.get("repo")]) or ""
+        repo_parts.append(f"{owner}/{repo}".strip("/"))
+    payload = {
+        "createdAt": parse_epoch_ms(repo_preview.get("repoCreatedAt")),
+        "defaultBranch": first_nonempty_string([repo_preview.get("branch")]) or "",
+        "forks": repo_preview.get("forkCount") or 0,
+        "license": first_nonempty_string(
+            [license_name, *[prepared_skill.get("license") for prepared_skill in prepared_skills]]
+        )
+        or "Unknown",
+        "nameWithOwner": first_nonempty_string(repo_parts) or "",
+        "owner": {
+            "avatarUrl": first_nonempty_string([repo_preview.get("ownerAvatarUrl")]),
+            "handle": first_nonempty_string([repo_preview.get("ownerHandle"), repo_preview.get("owner")]) or "",
+            "name": first_nonempty_string([repo_preview.get("ownerName")]),
+        },
+        "stars": repo_preview.get("stargazerCount") or 0,
+        "updatedAt": parse_epoch_ms(repo_preview.get("repoUpdatedAt")),
+    }
+    return omit_none(payload)
+
+
+def build_skills_re_prepared_batches(repo_preview: dict[str, Any], selected_skill_root_paths: list[str]) -> list[dict[str, Any]]:
+    preview_skills = repo_preview.get("skills")
+    if not isinstance(preview_skills, list):
+        raise ValueError("skills.re preview did not include a skills array.")
+
+    normalized_targets = {normalize_repo_path(path) for path in selected_skill_root_paths}
+    matched_skills = [
+        repo_skill
+        for repo_skill in preview_skills
+        if normalize_repo_path(repo_skill.get("skillRootPath")) in normalized_targets
+    ]
+    matched_roots = {normalize_repo_path(repo_skill.get("skillRootPath")) for repo_skill in matched_skills}
+    missing_roots = sorted(path for path in normalized_targets if path not in matched_roots)
+    if missing_roots:
+        missing_text = ", ".join(path or "(repo root)" for path in missing_roots)
+        raise ValueError(f"skills.re fetchRepo did not return target skillRootPath values: {missing_text}")
+
+    prepared_skills = [build_skills_re_prepared_skill(repo_preview, repo_skill) for repo_skill in matched_skills]
+    recent_commits = repo_preview.get("recentCommits") if isinstance(repo_preview.get("recentCommits"), list) else []
+    batches: list[dict[str, Any]] = []
+    for chunk in chunk_list(prepared_skills, SKILLS_RE_BATCH_SIZE):
+        batches.append(
+            omit_none(
+                {
+                    "recentCommits": recent_commits,
+                    "repo": build_skills_re_repo_metadata(repo_preview, chunk),
+                    "skills": chunk,
+                }
+            )
+        )
+    return batches
+
+
+def build_skills_re_submit_template(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "endpoint": MARKETS["skills-re"]["submit_url"],
+        "selectedSkillRootPaths": [normalize_repo_path(context["skill"]["relative_skill_dir"])],
+        "note": (
+            "Run fetchRepo first. The live adapter derives recentCommits, repo metadata, "
+            "and prepared skill snapshots from the preview before calling submitGithubPreparedPublic."
+        ),
+    }
+
+
+def split_command(command: str) -> list[str]:
+    parts = shlex.split(command)
+    if not parts:
+        raise ValueError("Expected a non-empty command.")
+    return parts
+
+
+def skills_sh_source(context: dict[str, Any]) -> str:
+    repo_url = context["repo"]["repo_url"]
+    source = github_repo_slug(repo_url) or clean_repo_url(repo_url)
+    if not source:
+        raise ValueError("skills.sh requires --repo-url.")
+    return source
+
+
+def build_skills_sh_command(context: dict[str, Any], args: argparse.Namespace) -> list[str]:
+    command_prefix = split_command(args.skills_sh_bin)
+    return [
+        *command_prefix,
+        "add",
+        skills_sh_source(context),
+        "--skill",
+        context["skill"]["name"],
+        "--agent",
+        "*",
+        "-y",
+    ]
+
+
+def skills_sh_telemetry_blockers() -> list[str]:
+    blockers = [
+        name
+        for name in ("DISABLE_TELEMETRY", "DO_NOT_TRACK")
+        if os.environ.get(name)
+    ]
+    blockers.extend(
+        name
+        for name in (
+            "CI",
+            "GITHUB_ACTIONS",
+            "GITLAB_CI",
+            "CIRCLECI",
+            "TRAVIS",
+            "BUILDKITE",
+            "JENKINS_URL",
+            "TEAMCITY_VERSION",
+        )
+        if os.environ.get(name)
+    )
+    return blockers
+
+
 def github_pack_url(context: dict[str, Any]) -> str | None:
     repo_url = context["repo"]["repo_url"]
     git_ref = context["repo"]["git_ref"]
@@ -937,18 +1244,8 @@ def build_skills_re_fetch_payload(context: dict[str, Any]) -> dict[str, Any]:
     return {"json": {"githubUrl": repo_url}}
 
 
-def build_skills_re_submit_payload(context: dict[str, Any], skill_root_paths: list[str]) -> dict[str, Any]:
-    repo_parts = github_repo_parts(context["repo"]["repo_url"])
-    if not repo_parts:
-        raise ValueError("skills-re requires a GitHub repository URL.")
-    owner, repo = repo_parts
-    return {
-        "json": {
-            "owner": owner,
-            "repo": repo,
-            "skillRootPaths": skill_root_paths,
-        }
-    }
+def build_skills_re_submit_payload(batch: dict[str, Any]) -> dict[str, Any]:
+    return {"json": batch}
 
 
 def build_bogen_payload(context: dict[str, Any]) -> dict[str, Any]:
@@ -1006,6 +1303,7 @@ def build_skillsrep_payload(context: dict[str, Any]) -> dict[str, str]:
 
 
 def detect_clawhub_publish_prefix(clawhub_bin: str) -> list[str]:
+    base_command = split_command(clawhub_bin)
     candidates = [
         (["publish"], ["publish", "--help"]),
         (["skill", "publish"], ["skill", "publish", "--help"]),
@@ -1013,7 +1311,7 @@ def detect_clawhub_publish_prefix(clawhub_bin: str) -> list[str]:
     for prefix, probe in candidates:
         try:
             result = subprocess.run(
-                [clawhub_bin, *probe],
+                [*base_command, *probe],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -1022,9 +1320,9 @@ def detect_clawhub_publish_prefix(clawhub_bin: str) -> list[str]:
         except FileNotFoundError as exc:
             raise ValueError(f"clawhub executable not found: {clawhub_bin}") from exc
         except subprocess.TimeoutExpired as exc:
-            raise ValueError(f"clawhub help probe timed out: {' '.join([clawhub_bin, *probe])}") from exc
+            raise ValueError(f"clawhub help probe timed out: {' '.join([*base_command, *probe])}") from exc
         if result.returncode == 0 and "Usage:" in (result.stdout or ""):
-            return [clawhub_bin, *prefix]
+            return [*base_command, *prefix]
     raise ValueError("Could not detect a supported ClawHub publish command from the installed CLI help.")
 
 
@@ -1091,15 +1389,13 @@ def write_bundle(context: dict[str, Any], plan: list[dict[str, Any]], out_dir: P
         "skillz-directory.json": lambda: build_skillz_payload(context),
         "skillstore-io.json": lambda: build_skillstore_payload(context),
         "skills-re.fetch.json": lambda: build_skills_re_fetch_payload(context),
-        "skills-re.submit.template.json": lambda: build_skills_re_submit_payload(
-            context,
-            [context["skill"]["relative_skill_dir"]],
-        ),
+        "skills-re.submit.template.json": lambda: build_skills_re_submit_template(context),
         "skillsmd-dev.json": lambda: build_skillsmd_payload(context),
         "bogen-ai.json": lambda: build_bogen_payload(context),
         "skillsrep.form.json": lambda: build_skillsrep_payload(context),
         "a2a-market.json": lambda: build_a2a_payload(context),
         "clawhub-command.txt": lambda: build_clawhub_command(context, args),
+        "skills-sh-command.txt": lambda: build_skills_sh_command(context, args),
     }
     for filename, builder in payload_builders.items():
         output_path = payload_dir / filename
@@ -1109,7 +1405,7 @@ def write_bundle(context: dict[str, Any], plan: list[dict[str, Any]], out_dir: P
             output_path.with_suffix(output_path.suffix + ".missing").write_text(str(exc) + "\n")
             continue
         if isinstance(payload, list):
-            output_path.write_text(" ".join(payload) + "\n")
+            output_path.write_text(shlex.join(payload) + "\n")
         else:
             output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
 
@@ -1118,7 +1414,7 @@ def dry_run_output(market: str, payload: Any) -> None:
     print(f"[DRY RUN] {market}")
     if isinstance(payload, list):
         print("Command:")
-        print(" ".join(payload))
+        print(shlex.join(payload))
         return
     print_json(payload)
 
@@ -1145,6 +1441,29 @@ def post_json(submit_url: str, payload: dict[str, Any], headers: dict[str, str] 
         except json.JSONDecodeError:
             parsed = body
         return {"status": resp.status, "body": parsed}
+
+
+def post_json_with_retry(
+    submit_url: str,
+    payload: dict[str, Any],
+    headers: dict[str, str] | None = None,
+    retry_statuses: set[int] | None = None,
+    max_attempts: int = 2,
+) -> dict[str, Any]:
+    retry_statuses = retry_statuses or set()
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return post_json(submit_url, payload, headers=headers)
+        except error.HTTPError as exc:
+            if exc.code not in retry_statuses or attempt >= max_attempts:
+                raise
+            retry_after = exc.headers.get("Retry-After")
+            try:
+                wait_seconds = max(1, int(retry_after)) if retry_after else 5
+            except ValueError:
+                wait_seconds = 5
+            time.sleep(wait_seconds)
+    raise RuntimeError("unreachable")
 
 
 def fetch_html(url: str, opener: request.OpenerDirector | None = None, timeout: int = 20) -> tuple[int, str, str]:
@@ -1239,7 +1558,7 @@ def submit_skillstore_io(context: dict[str, Any], execute: bool) -> dict[str, An
 def submit_skills_re(context: dict[str, Any], execute: bool) -> dict[str, Any]:
     try:
         fetch_payload = build_skills_re_fetch_payload(context)
-        submit_template = build_skills_re_submit_payload(context, [context["skill"]["relative_skill_dir"]])
+        submit_template = build_skills_re_submit_template(context)
     except ValueError as exc:
         fail(str(exc))
     if not execute:
@@ -1251,19 +1570,84 @@ def submit_skills_re(context: dict[str, Any], execute: bool) -> dict[str, Any]:
             "submit_template": submit_template,
         }
 
-    fetch_result = post_json("https://skills.re/api/rpc/github/fetchRepo", fetch_payload)
+    fetch_result = post_json_with_retry(
+        f"{SKILLS_RE_RPC_BASE}/github/fetchRepo",
+        fetch_payload,
+        retry_statuses={429},
+    )
     fetch_body = fetch_result.get("body", {})
     repo_json = fetch_body.get("json", {}) if isinstance(fetch_body, dict) else {}
-    skills = repo_json.get("skills", [])
-    target_path = context["skill"]["relative_skill_dir"]
-    matched_paths = [item.get("skillRootPath") for item in skills if item.get("skillRootPath") == target_path]
-    if not matched_paths:
-        fail(f"skills-re fetchRepo did not return target skillRootPath: {target_path}")
-    submit_payload = build_skills_re_submit_payload(context, matched_paths)
-    submit_result = post_json(MARKETS["skills-re"]["submit_url"], submit_payload)
+    try:
+        prepared_batches = build_skills_re_prepared_batches(repo_json, [context["skill"]["relative_skill_dir"]])
+    except ValueError as exc:
+        fail(str(exc))
+
+    submit_results = []
+    for batch in prepared_batches:
+        submit_payload = build_skills_re_submit_payload(batch)
+        submit_results.append(
+            {
+                "payload": submit_payload,
+                "result": post_json_with_retry(
+                    MARKETS["skills-re"]["submit_url"],
+                    submit_payload,
+                    retry_statuses={429},
+                ),
+            }
+        )
     return {
         "fetch": fetch_result,
-        "submit": submit_result,
+        "submit": submit_results,
+    }
+
+
+def submit_skills_sh(context: dict[str, Any], args: argparse.Namespace, execute: bool) -> dict[str, Any]:
+    try:
+        command = build_skills_sh_command(context, args)
+    except ValueError as exc:
+        fail(str(exc))
+    if not execute:
+        dry_run_output(
+            "skills-sh",
+            {
+                "command": command,
+                "temporary_project_directory": "created at execution time and deleted after the command exits",
+                "source": skills_sh_source(context),
+                "skill": context["skill"]["name"],
+            },
+        )
+        return {"dry_run": True, "command": command}
+
+    blockers = skills_sh_telemetry_blockers()
+    if blockers:
+        fail(
+            "skills.sh indexing depends on anonymous skills CLI telemetry. "
+            f"Unset these environment variables before executing: {', '.join(blockers)}"
+        )
+
+    with tempfile.TemporaryDirectory(prefix="skills-sh-publish-") as temp_dir:
+        temp_path = Path(temp_dir)
+        try:
+            result = subprocess.run(
+                command,
+                cwd=temp_path,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            fail(f"skills.sh command executable not found: {command[0]}")
+        temp_path_text = str(temp_path)
+
+    return {
+        "command": command,
+        "returncode": result.returncode,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "temporary_project_directory": temp_path_text,
+        "temporary_project_directory_deleted": not Path(temp_path_text).exists(),
+        "verify": MARKETS["skills-sh"]["verify"],
     }
 
 
@@ -1360,7 +1744,15 @@ def fetch_recon(url: str) -> str:
 def collect_recon_content(market_name: str, url: str) -> str:
     content = fetch_recon(url)
     if market_name != "skillz-directory":
-        return content
+        if market_name != "skills-re":
+            return content
+        asset_paths = re.findall(r'href="([^"]*/assets/(?:index|submit|proxy)[^"]+\.js)"', content)
+        combined = [content]
+        base_url = "https://skills.re"
+        for asset_path in asset_paths[:10]:
+            absolute = parse.urljoin(base_url, asset_path)
+            combined.append(fetch_recon(absolute))
+        return "\n".join(combined)
 
     chunk_paths = re.findall(r'src="([^"]+_next/static/chunks/[^"]+)"', content)
     combined = [content]
@@ -1473,6 +1865,8 @@ def command_publish(args: argparse.Namespace) -> None:
             result = submit_skillstore_io(context, args.execute)
         elif market == "skills-re":
             result = submit_skills_re(context, args.execute)
+        elif market == "skills-sh":
+            result = submit_skills_sh(context, args, args.execute)
         elif market == "skillsmd-dev":
             result = submit_skillsmd_dev(context, args.execute)
         elif market == "bogen-ai":
@@ -1532,6 +1926,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_shared_arguments(sub)
     sub.add_argument("--out-dir", required=True, help="Output directory for the bundle")
     sub.add_argument("--clawhub-bin", default="clawhub", help="Executable name for the ClawHub CLI")
+    sub.add_argument(
+        "--skills-sh-bin",
+        default="npx -y skills",
+        help="Command prefix for the skills CLI used by the skills.sh adapter",
+    )
     sub.set_defaults(func=command_bundle)
 
     sub = inspect_parser.add_parser("publish", help="Publish one verified market")
@@ -1544,6 +1943,7 @@ def build_parser() -> argparse.ArgumentParser:
             "skillz-directory",
             "skillstore-io",
             "skills-re",
+            "skills-sh",
             "skillsmd-dev",
             "bogen-ai",
             "skillsrep",
@@ -1553,6 +1953,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_shared_arguments(sub)
     sub.add_argument("--execute", action="store_true", help="Perform the live publish instead of a dry run")
     sub.add_argument("--clawhub-bin", default="clawhub", help="Executable name for the ClawHub CLI")
+    sub.add_argument(
+        "--skills-sh-bin",
+        default="npx -y skills",
+        help="Command prefix for the skills CLI used by the skills.sh adapter",
+    )
     sub.set_defaults(func=command_publish)
 
     sub = inspect_parser.add_parser("recon", help="Re-verify known market surfaces")

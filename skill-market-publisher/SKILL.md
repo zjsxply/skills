@@ -198,6 +198,7 @@ Wrapped live targets:
 - `skillz-directory`
 - `skillstore-io`
 - `skills-re`
+- `skills-sh`
 - `skillsmd-dev`
 - `bogen-ai`
 - `skillsrep`

@@ -120,22 +120,21 @@ Use this matrix to decide whether the target market should be handled by wrapped
 
 - Mode: `auto-http`
 - Submission path:
-  - preview `POST https://skills.re/api/rpc/github/fetchRepo`
-  - submit `POST https://skills.re/api/rpc/skills/submitGithubRepoPublic`
+  - preview `POST https://api.skills.re/rpc/github/fetchRepo`
+  - submit `POST https://api.skills.re/rpc/skills/submitGithubPreparedPublic`
 - Required fields:
   - GitHub repository URL for preview
-  - `owner`
-  - `repo`
-  - `skillRootPaths`
+  - prepared batch payload derived from the preview:
+    `recentCommits`, `repo`, `skills`
 - Auth: none
 - Compatible unit:
-  - public GitHub repository URL plus one or more resolved skill root paths
+  - public GitHub repository URL plus one or more resolved skill root paths selected from preview
 - Verification:
   - public author and skill pages after submit
-  - public read APIs under `https://skills.re/api/rpc/`
+  - public read APIs under `https://api.skills.re/rpc/`
 - Notes:
   - Use `fetchRepo` first and only submit the exact `skillRootPath` values returned by the live backend.
-  - Review a submit template before execution, then replace it only with the exact paths returned by `fetchRepo`.
+  - The current front-end converts preview data into prepared batches before submission; a raw `{owner, repo, skillRootPaths}` payload is no longer sufficient.
   - This is safer than trusting submit-page copy about repo layout.
   - If the public submit page still implies a repo-root `skills/` directory, treat root-pack acceptance as best-effort until preview and public verification both succeed.
 
@@ -391,15 +390,22 @@ Use this matrix to decide whether the target market should be handled by wrapped
 - Warning:
   - The advertised GitHub issue path has been unreliable enough that this remains a manual target only.
 
-## Discovery Or Indexing Targets
+## Telemetry-Driven Indexing Targets
 
 ### skills.sh
 
-- Mode: `index-only`
+- Mode: `auto-cli`
+- Submission path:
+  - create a temporary project directory
+  - run `npx -y skills add <owner/repo> --skill <skill-name> --agent '*' -y`
+  - delete the temporary project directory after the command exits
+- Required fields:
+  - public repository URL
+- Auth: none, but anonymous `skills` CLI telemetry must be enabled
 - Notes:
-  - Public discovery is tied to installability and ecosystem indexing rather than an explicit submission form in the current public docs.
-  - Verification should use `npx skills find <query>` or the public search API:
-    - `https://skills.sh/api/search?q=<query>&limit=10`
+  - Public discovery is tied to install telemetry rather than an explicit submission form or publish API in the current public docs.
+  - The adapter uses a throwaway project directory so no permanent agent skill install remains in the operator's workspace.
+  - Verification should use `npx -y skills find <query>` and the skills.sh repo or skill page after cache refresh.
 
 ## Different Artifact Model
 
